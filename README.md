@@ -1,0 +1,2 @@
+# MobiSenseApp
+Oppo Reno 7AをIMUセンサー兼画像認識デバイスとして使用し、ESP32とBLEで通信するモバイルアプリ

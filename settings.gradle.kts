@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "SSR-2025-Team5-App"
 include(":app")
+include(":OpenCV")

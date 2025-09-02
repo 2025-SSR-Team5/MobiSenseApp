@@ -93,6 +93,7 @@ class BleHandler(private val context: Context) {
 
         if (!checkPermissions(Manifest.permission.BLUETOOTH_SCAN)) {
             Log.e("Bluetooth", "BLE permissions missing for scan")
+
             Toast.makeText(context, "BLEスキャン権限がありません", Toast.LENGTH_SHORT).show()
             return
         }

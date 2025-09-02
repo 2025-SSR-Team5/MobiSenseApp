@@ -3,6 +3,8 @@ package com.example.ssr_2025_team5_app
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import android.util.Log
+import android.content.Intent
+import android.widget.Button
 
 class MainActivity : AppCompatActivity() {
 
@@ -28,6 +30,13 @@ class MainActivity : AppCompatActivity() {
               "IMU",
              "Roll=$roll, Pitch=$pitch, Azimuth=$azimuth"
             )
+        }
+
+        //LineTraceボタンが押された時の処理
+        val btn = findViewById<Button>(R.id.buttonLineTrace)
+        btn.setOnClickListener {
+            val intent = Intent(this, LineTrace::class.java)
+            startActivity(intent)
         }
     }
 

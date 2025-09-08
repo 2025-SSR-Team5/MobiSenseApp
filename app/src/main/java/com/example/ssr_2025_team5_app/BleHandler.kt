@@ -8,8 +8,10 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
+import android.view.View
 import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -18,12 +20,35 @@ import java.nio.ByteOrder
 import java.util.*
 
 class BleHandler(private val context: Context) {
-
     private var bluetoothAdapter: BluetoothAdapter? = null
     private var bluetoothGatt: BluetoothGatt? = null
+
+    var isConnected = false
+
+    private var servicesReady = false
     private var isScanning = false
     private val handler = Handler(Looper.getMainLooper())
+    private val bleHandlerThread: HandlerThread = HandlerThread("BleHandlerThread").apply { start() }
+    private val bleHandler: Handler = Handler(bleHandlerThread.looper)
+
+    interface BleConnectionCallback {
+        fun onConnectionStateChanged(isConnected: Boolean)
+    }
+
+    private var connectionCallback: BleConnectionCallback? = null
+
+    fun setConnectionCallback(callback: BleConnectionCallback) {
+        this.connectionCallback = callback
+    }
     companion object {
+        @Volatile
+        private var INSTANCE: BleHandler? = null
+
+        fun getInstance(context: Context): BleHandler {
+            return INSTANCE ?: synchronized(this) {
+                INSTANCE ?: BleHandler(context.applicationContext).also { INSTANCE = it }
+            }
+        }
         private val SERVICE_UUID = UUID.fromString("ab907856-3412-3412-3412-1234567890ab")
         private val CHAR_UUID    = UUID.fromString("ab907856-efcd-ab90-7856-34123412cdab")
         private const val TARGET_DEVICE_ADDRESS = "EC:E3:34:90:D8:EE"
@@ -36,8 +61,10 @@ class BleHandler(private val context: Context) {
             if (result.device.address == TARGET_DEVICE_ADDRESS) {
                 if (isScanning) {
                     Log.d("Bluetooth", "Found target device: ${result.device.address}")
-                    stopScan()
-                    connectToDevice(result.device)
+                    bleHandler.post {
+                        stopScan()
+                        connectToDevice(result.device)
+                    }
                 }
             }
         }
@@ -55,6 +82,7 @@ class BleHandler(private val context: Context) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     Log.d("Bluetooth", "Successfully connected to ${gatt?.device?.address}")
+                    isConnected = true
                     bluetoothGatt = gatt
                     // 権限チェックを追加
                     if (checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) {
@@ -62,11 +90,17 @@ class BleHandler(private val context: Context) {
                     }
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     Log.d("Bluetooth", "Disconnected from ${gatt?.device?.address}")
+                    isConnected = false
                     cleanup()
                 }
             } else {
                 Log.e("Bluetooth", "onConnectionStateChange error. Status: $status, Device: ${gatt?.device?.address}")
+                isConnected = false
                 cleanup()
+            }
+
+            handler.post { // 既存のメインルーパーハンドラを使用
+                connectionCallback?.onConnectionStateChanged(isConnected)
             }
         }
 
@@ -74,6 +108,11 @@ class BleHandler(private val context: Context) {
             super.onServicesDiscovered(gatt, status)
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 Log.d("Bluetooth", "Services discovered successfully.")
+                servicesReady = true
+
+                bleHandler.post {
+                    sendPendingData()
+                }
             } else {
                 Log.w("Bluetooth", "onServicesDiscovered failed with status: $status")
             }
@@ -82,6 +121,12 @@ class BleHandler(private val context: Context) {
 
     fun startScan() {
         if (isScanning) return
+        if (isConnected){
+            Log.d("Bluetooth", "Already connected")
+
+            Toast.makeText(context, "既に接続されています", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = bluetoothManager.adapter
@@ -120,24 +165,69 @@ class BleHandler(private val context: Context) {
         scanner.startScan(null, settings, scanCallback)
         Log.d("Bluetooth", "Starting BLE scan for $TARGET_DEVICE_ADDRESS")
     }
+    fun sendToFData(roll: Float, pitch: Float, azimuth: Float) {
+        bleHandler.post {
+            if (!servicesReady || !checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) return@post
 
-    fun sendSensorData(roll: Float, pitch: Float, azimuth: Float) {
-        if (!checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) return
+            val gatt = bluetoothGatt ?: return@post
+            val service = gatt.getService(SERVICE_UUID) ?: return@post
+            val characteristic = service.getCharacteristic(CHAR_UUID) ?: return@post
 
-        val gatt = bluetoothGatt ?: return
-        val service = gatt.getService(SERVICE_UUID) ?: return
-        val characteristic = service.getCharacteristic(CHAR_UUID) ?: return
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
 
-        val buffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putFloat(roll).putFloat(pitch).putFloat(azimuth)
-        characteristic.value = buffer.array()
-        gatt.writeCharacteristic(characteristic)
+            val buffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+            buffer.putFloat(roll).putFloat(pitch).putFloat(azimuth)
+            characteristic.value = buffer.array()
+            gatt.writeCharacteristic(characteristic)
+        }
+    }
+
+    private val pendingLineData = mutableListOf<Pair<Float, Float>>()
+    fun sendLineData(centerLine: Float, width: Float) {
+        bleHandler.post {
+            if (!checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) return@post
+
+            if (!servicesReady) {
+                pendingLineData.add(Pair(centerLine, width))
+                return@post
+            }
+
+            val gatt = bluetoothGatt ?: return@post
+            val service = gatt.getService(SERVICE_UUID) ?: return@post
+            val characteristic = service.getCharacteristic(CHAR_UUID) ?: return@post
+
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+
+            val buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            buffer.putFloat(centerLine).putFloat(width)
+            characteristic.value = buffer.array()
+            gatt.writeCharacteristic(characteristic)
+        }
+    }
+
+    private fun sendPendingData() {
+        if (pendingLineData.isNotEmpty()) {
+            Log.d("Bluetooth", "Sending ${pendingLineData.size} pending data items.")
+            pendingLineData.forEach { (centerLine, width) ->
+                // 再帰的に呼び出すことで、servicesReadyのチェックを再利用する
+                sendLineData(centerLine, width)
+            }
+            pendingLineData.clear()
+        }
     }
 
     fun cleanup() {
-        if (!checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) return
-        bluetoothGatt?.close()
-        bluetoothGatt = null
+        bleHandler.post {
+            if (!checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) return@post
+            bluetoothGatt?.close()
+            bluetoothGatt = null
+            servicesReady = false
+        }
+        //bleHandlerThread.quitSafely()
+    }
+
+    fun quitSafety() {
+        bleHandlerThread.quitSafely()
     }
 
     private fun stopScan() {

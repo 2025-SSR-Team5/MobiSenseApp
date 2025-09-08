@@ -33,6 +33,7 @@ import android.graphics.Rect
 
 
 class LineTrace : AppCompatActivity() {
+    private var lineDataListener: ((Float, Float) -> Unit)? = null
     private lateinit var textureView: TextureView
     private lateinit var cameraManager: CameraManager
     private var cameraDevice: CameraDevice? = null
@@ -107,16 +108,11 @@ class LineTrace : AppCompatActivity() {
         }, null)
 
         cameraDevice?.createCaptureSession(
-            // listOf(previewSurface, imageReader!!.surface), // 修正前
-            listOf(imageReader!!.surface), // 修正後: previewSurface を削除
+            listOf(imageReader!!.surface),
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     val request = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-
-                    // ▼▼▼ 修正点 2 ▼▼▼
-                    // requestのターゲットも ImageReader の surface のみにします
-                    // request.addTarget(previewSurface) // 修正後: この行を削除
                     request.addTarget(imageReader!!.surface)
 
                     session.setRepeatingRequest(request.build(), null, null)
@@ -125,9 +121,7 @@ class LineTrace : AppCompatActivity() {
             }, null
         )
     }
-
-
-    private fun processFrame(image: android.media.Image) {
+    fun processFrame(image: android.media.Image) {
         val plane = image.planes[0]
         val buffer = plane.buffer
         val width = image.width
@@ -135,16 +129,14 @@ class LineTrace : AppCompatActivity() {
         val rowStride = plane.rowStride
         val pixelStride = plane.pixelStride
 
-        // rowStrideとwidthが同じ場合はそのまま使える
-        // 違う場合は、1行ずつ正しいデータ幅(width)でコピーする必要がある
-        val yMat = Mat(height, width, CvType.CV_8UC1)
+        val yMat = Mat(height, width, CvType.CV_8UC1) // Y成分を抽出
+
+        //グレースケール変換
         if (pixelStride == 1 && rowStride == width) {
-            // パディングがないラッキーなケース
             val bytes = ByteArray(buffer.remaining())
             buffer.get(bytes)
             yMat.put(0, 0, bytes)
         } else {
-            // パディングがある一般的なケース
             val bytes = ByteArray(width)
             for (row in 0 until height) {
                 buffer.position(row * rowStride)
@@ -153,40 +145,64 @@ class LineTrace : AppCompatActivity() {
             }
         }
 
+        //2値化
         val binaryMat = Mat()
-        Imgproc.threshold(yMat, binaryMat, 128.0, 255.0, Imgproc.THRESH_BINARY_INV)
+        Imgproc.threshold(yMat, binaryMat, 200.0, 255.0, Imgproc.THRESH_BINARY_INV)
 
-        val contours = mutableListOf<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(binaryMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+        val centerRowIndex = binaryMat.rows() / 2
+        val rowBytes = ByteArray(width)
+        binaryMat.get(centerRowIndex, 0, rowBytes)
+
+        val rowFloats = FloatArray(width) { i -> (rowBytes[i].toInt() and 0xFF).toFloat() }
+
+        val dRow = FloatArray(width)
+        for (i in 1 until width - 1) {
+            dRow[i] = (rowFloats[i + 1] - rowFloats[i - 1]) / 2f
+        }
+
+        dRow[0] = rowFloats[1] - rowFloats[0]
+        dRow[width - 1] = rowFloats[width - 1] - rowFloats[width - 2]
+
+        val rowMax = dRow.indices.maxByOrNull { dRow[it] } ?: -1
+        val rowMin = dRow.indices.minByOrNull { dRow[it] } ?: -1
+        val centerLine = (rowMax + rowMin) / 2.0
 
         val colorMat = Mat()
         Imgproc.cvtColor(yMat, colorMat, Imgproc.COLOR_GRAY2BGR)
 
-        for (cnt in contours) {
-            val cnt2f = MatOfPoint2f(*cnt.toArray())
-            val approx = MatOfPoint2f()
-            val epsilon = 0.01 * Imgproc.arcLength(cnt2f, true)
-            Imgproc.approxPolyDP(cnt2f, approx, epsilon, true)
+        val lineX = centerLine.toInt()
 
-            val points = MatOfPoint(*approx.toArray().map { Point(it.x, it.y) }.toTypedArray())
-            Imgproc.polylines(colorMat, listOf(points), true, Scalar(0.0, 0.0, 255.0), 2)
-        }
+        Imgproc.line(
+            colorMat,
+            Point(lineX.toDouble(), 0.0),
+            Point(lineX.toDouble(), colorMat.rows().toDouble()),
+            Scalar(0.0, 0.0, 255.0), 2
+        )
+
+        Core.rotate(colorMat, colorMat, Core.ROTATE_90_CLOCKWISE)
 
         val bmp = Bitmap.createBitmap(colorMat.cols(), colorMat.rows(), Bitmap.Config.ARGB_8888)
         Utils.matToBitmap(colorMat, bmp)
 
+        val bleHandler = BleHandler.getInstance(this)
+        bleHandler.sendLineData(centerLine.toFloat(), width.toFloat())
+
+
         runOnUiThread {
             val canvas = textureView.lockCanvas()
             canvas?.let {
-                it.drawBitmap(bmp, 0f, 0f, null)
+                val destRect = Rect(0, 0, width, height)
+                it.drawBitmap(bmp, null, destRect, null)
                 textureView.unlockCanvasAndPost(it)
             }
-            tvLineStatus.text = if (contours.isNotEmpty()) "ライン検出!" else "ラインなし"
+            tvLineStatus.text = if(centerLine >= width/2) "右：${centerLine} ${width}" else "左：${centerLine} ${width}"
         }
 
-        colorMat.release()
         binaryMat.release()
-        hierarchy.release()
+        colorMat.release()
+    }
+
+    fun setOnLineDataListener(listener: (centerLine: Float, width: Float) -> Unit) {
+        this.lineDataListener = listener
     }
 }

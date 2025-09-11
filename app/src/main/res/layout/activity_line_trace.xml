@@ -18,4 +18,10 @@
         android:text="Line status"
         android:textColor="#FF0000"
         android:textSize="24sp" />
+    <SeekBar
+        android:id="@+id/thresholdSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="255"
+        android:progress="200" />
 </FrameLayout>

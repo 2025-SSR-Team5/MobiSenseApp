@@ -30,8 +30,10 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import org.ejml.simple.SimpleMatrix
+import kotlin.math.atan
 import kotlin.math.exp
 import kotlin.math.pow
+import kotlin.math.PI
 
 class LineTrace : AppCompatActivity() {
     private var lineDataListener: ((Float, Float) -> Unit)? = null
@@ -270,6 +272,9 @@ class LineTrace : AppCompatActivity() {
 
         val bleHandler = BleHandler.getInstance(this)
         // bleHandler.sendLineData(centerLine.toFloat(), width.toFloat())
+        val theta = atan(a) *180.0/PI
+        val linePos = a * height/2 + b
+        bleHandler.sendLineData(theta.toFloat(), linePos.toFloat())
 
         runOnUiThread {
             val canvas = textureView.lockCanvas()
@@ -278,14 +283,14 @@ class LineTrace : AppCompatActivity() {
                 it.drawBitmap(bmp, null, destRect, null)
                 textureView.unlockCanvasAndPost(it)
             }
-            tvLineStatus.text = "a: $a, b: $b idx:$idx"
+            tvLineStatus.text = "Θ：${theta}  linePos：${linePos}"
         }
 
         binaryMat.release()
         colorMat.release()
     }
 
-    fun setOnLineDataListener(listener: (centerLine: Float, width: Float) -> Unit) {
+    fun setOnLineDataListener(listener: (theta: Float, linePos: Float) -> Unit) {
         this.lineDataListener = listener
     }
 }

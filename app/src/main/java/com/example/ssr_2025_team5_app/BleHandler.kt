@@ -183,12 +183,12 @@ class BleHandler(private val context: Context) {
     }
 
     private val pendingLineData = mutableListOf<Pair<Float, Float>>()
-    fun sendLineData(centerLine: Float, width: Float) {
+    fun sendLineData(theta: Float, linePos: Float) {
         bleHandler.post {
             if (!checkPermissions(Manifest.permission.BLUETOOTH_CONNECT)) return@post
 
             if (!servicesReady) {
-                pendingLineData.add(Pair(centerLine, width))
+                pendingLineData.add(Pair(theta, linePos))
                 return@post
             }
 
@@ -199,7 +199,7 @@ class BleHandler(private val context: Context) {
             characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
 
             val buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-            buffer.putFloat(centerLine).putFloat(width)
+            buffer.putFloat(theta).putFloat(linePos)
             characteristic.value = buffer.array()
             gatt.writeCharacteristic(characteristic)
         }
